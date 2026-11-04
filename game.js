@@ -1,258 +1,345 @@
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
 
+ctx.imageSmoothingEnabled = false;
+
+// Variables de Estado y Progresión
+let gameState = "MENU";
 let score = 0;
 let lives = 3;
-let wave = 1;
-let gameState = "PLAYING"; // PLAYING, GAMEOVER
-let screenShakeTimer = 0;
+let stageWaves = 0;
+let cameraX = 0;
 
-// Jugador (Homer)
-let player = {
-    x: 100,
-    y: 310,
-    width: 45,
-    height: 75,
-    speed: 5,
-    dx: 0,
-    dy: 0,
-    isAttacking: false,
-    facing: 1 // 1 derecha, -1 izquierda
+// Delimitadores del plano de profundidad (Y-Sorting Floor)
+const GROUND_MIN = 320;
+const GROUND_MAX = 460;
+
+// Jugador (Homer con físicas de sprite dinámico)
+const player = {
+    x: 120,
+    y: 390,
+    z: 0,
+    vz: 0,
+    width: 64,
+    height: 96,
+    speed: 4,
+    facing: 1, // 1: Derecha, -1: Izquierda
+    isJumping: false,
+    isPunching: false,
+    animFrame: 0,
+    animTimer: 0,
+    state: "IDLE" // IDLE, WALK, JUMP, PUNCH, HIT
 };
 
-// Enemigos (Secuaces de Springfield con IA por estados)
-let enemies = [
-    { x: 750, y: 315, width: 42, height: 72, speed: 2, active: true, color: "#e74c3c", hp: 2 },
-    { x: 950, y: 315, width: 42, height: 72, speed: 1.6, active: true, color: "#9b59b6", hp: 1 }
-];
+let enemies = [];
+let effects = []; // Textos flotantes de daño o gráficos estilo "POW!"
 
-// Sistema de partículas para impactos y golpes
-let particles = [];
-function spawnParticles(x, y, color) {
-    for (let i = 0; i < 8; i++) {
-        particles.push({
-            x: x,
-            y: y,
-            dx: (Math.random() - 0.5) * 6,
-            dy: (Math.random() - 0.5) * 6,
-            radius: Math.random() * 4 + 2,
-            color: color,
-            life: 25
+// Controles
+const input = { left: false, right: false, up: false, down: false };
+
+window.addEventListener("keydown", (e) => handleKey(e, true));
+window.addEventListener("keyup", (e) => handleKey(e, false));
+
+function handleKey(e, isDown) {
+    switch(e.key.toLowerCase()) {
+        case "arrowleft": case "a": input.left = isDown; break;
+        case "arrowright": case "d": input.right = isDown; break;
+        case "arrowup": case "w": input.up = isDown; break;
+        case "arrowdown": case "s": input.down = isDown; break;
+        case " ": case "k": if(isDown) triggerJump(); break;
+        case "j": case "f": if(isDown) triggerPunch(); break;
+    }
+}
+
+// Configuración táctil
+setupTouchButton("btnLeft", "left");
+setupTouchButton("btnRight", "right");
+setupTouchButton("btnUp", "up");
+setupTouchButton("btnDown", "down");
+document.getElementById("btnJump").addEventListener("click", triggerJump);
+document.getElementById("btnPunch").addEventListener("click", triggerPunch);
+
+function setupTouchButton(id, key) {
+    const btn = document.getElementById(id);
+    btn.addEventListener("touchstart", (e) => { e.preventDefault(); input[key] = true; });
+    btn.addEventListener("touchend", (e) => { e.preventDefault(); input[key] = false; });
+    btn.addEventListener("mousedown", () => input[key] = true);
+    btn.addEventListener("mouseup", () => input[key] = false);
+}
+
+function triggerJump() {
+    if (gameState === "PLAYING" && !player.isJumping) {
+        player.vz = -10;
+        player.isJumping = true;
+        player.state = "JUMP";
+    }
+}
+
+function triggerPunch() {
+    if (gameState === "PLAYING" && !player.isPunching) {
+        player.isPunching = true;
+        player.state = "PUNCH";
+        player.animFrame = 0;
+
+        // Comprobación de Hitbox contra enemigos en rango táctico
+        enemies.forEach((enemy, idx) => {
+            const hitBoxX = player.facing === 1 ? player.x + player.width : player.x - 45;
+            const distanceX = Math.abs((player.x + player.width/2) - (enemy.x + enemy.width/2));
+            const distanceY = Math.abs(player.y - enemy.y);
+
+            if (distanceX < 75 && distanceY < 30) {
+                if ((player.facing === 1 && enemy.x > player.x) || (player.facing === -1 && enemy.x < player.x)) {
+                    enemy.hp -= 1;
+                    enemy.isHit = true;
+                    enemy.hitTimer = 10;
+                    score += 150;
+
+                    // Generar efecto visual de impacto estilo cómic
+                    effects.push({
+                        text: "POW!",
+                        x: enemy.x + 10,
+                        y: enemy.y - 30,
+                        life: 25,
+                        color: "#ffcc00"
+                    });
+
+                    if (enemy.hp <= 0) {
+                        enemies.splice(idx, 1);
+                        stageWaves++;
+                        spawnEnemy();
+                    }
+                }
+            }
         });
+
+        setTimeout(() => { player.isPunching = false; }, 200);
     }
 }
 
-// Control de Teclado
-let keys = {};
-window.addEventListener("keydown", e => {
-    keys[e.key] = true;
-    if ((e.key === " " || e.key === "z" || e.key === "Z") && gameState === "PLAYING") {
-        triggerAttack();
-    }
-});
-window.addEventListener("keyup", e => keys[e.key] = false);
-
-// Controles Táctiles para Móviles / App de X
-function bindTouch(id, actionStart, actionEnd) {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.addEventListener("touchstart", (e) => { e.preventDefault(); actionStart(); });
-    el.addEventListener("touchend", (e) => { e.preventDefault(); if (actionEnd) actionEnd(); });
+function startGame() {
+    gameState = "PLAYING";
+    score = 0;
+    lives = 3;
+    stageWaves = 0;
+    player.x = 100;
+    player.y = 400;
+    enemies = [];
+    effects = [];
+    spawnEnemy();
+    document.getElementById("startScreen").classList.add("hidden");
+    document.getElementById("gameOverScreen").classList.add("hidden");
 }
 
-bindTouch("btn-left", () => { player.dx = -player.speed; player.facing = -1; }, () => { if(player.dx < 0) player.dx = 0; });
-bindTouch("btn-right", () => { player.dx = player.speed; player.facing = 1; }, () => { if(player.dx > 0) player.dx = 0; });
-bindTouch("btn-attack", () => triggerAttack());
+function resetGame() {
+    startGame();
+}
 
-function triggerAttack() {
-    if (gameState !== "PLAYING") return;
-    player.isAttacking = true;
-    setTimeout(() => { player.isAttacking = false; }, 180);
+function spawnEnemy() {
+    enemies.push({
+        x: cameraX + canvas.width + 100 + Math.random() * 150,
+        y: GROUND_MIN + Math.random() * (GROUND_MAX - GROUND_MIN),
+        width: 56,
+        height: 88,
+        speed: 1.5 + Math.random() * 0.8,
+        hp: 2,
+        isHit: false,
+        hitTimer: 0,
+        type: Math.random() > 0.5 ? "SMITHERS" : "AGENT"
+    });
+}
+
+function gameLoop() {
+    update();
+    render();
+    requestAnimationFrame(gameLoop);
 }
 
 function update() {
-    if (screenShakeTimer > 0) screenShakeTimer--;
+    if (gameState !== "PLAYING") return;
 
-    if (gameState === "PLAYING") {
-        // Movimiento del jugador
-        player.x += player.dx;
-        if (keys["ArrowLeft"] || keys["a"] || keys["A"]) { player.x -= player.speed; player.facing = -1; }
-        if (keys["ArrowRight"] || keys["d"] || keys["D"]) { player.x += player.speed; player.facing = 1; }
+    let isMoving = false;
+    if (input.left) { player.x -= player.speed; player.facing = -1; isMoving = true; }
+    if (input.right) { player.x += player.speed; player.facing = 1; isMoving = true; }
+    if (input.up) { player.y -= player.speed * 0.8; isMoving = true; }
+    if (input.down) { player.y += player.speed * 0.8; isMoving = true; }
 
-        // Límites de la pantalla
-        if (player.x < 15) player.x = 15;
-        if (player.x > canvas.width - player.width - 15) player.x = canvas.width - player.width - 15;
-
-        // Actualizar Enemigos
-        enemies.forEach(enemy => {
-            if (!enemy.active) return;
-
-            // IA de persecución suave
-            if (enemy.x > player.x) {
-                enemy.x -= enemy.speed + (wave * 0.2);
-            } else {
-                enemy.x += enemy.speed + (wave * 0.2);
-            }
-
-            // Detección de golpe del jugador
-            if (player.isAttacking && Math.abs(player.x - enemy.x) < 55) {
-                enemy.hp--;
-                spawnParticles(enemy.x + 20, enemy.y + 30, "#ffd700");
-                screenShakeTimer = 6; // Efecto de impacto arcade
-
-                if (enemy.hp <= 0) {
-                    enemy.active = false;
-                    score += 200 * wave;
-                    document.getElementById("score").innerText = `SCORE: ${String(score).padStart(6, '0')}`;
-                    
-                    // Reaparecer con más velocidad (Oleadas)
-                    setTimeout(() => {
-                        enemy.x = canvas.width + 100;
-                        enemy.hp = 1 + Math.floor(wave / 2);
-                        enemy.active = true;
-                        if (score > wave * 1000) wave++;
-                    }, 1500);
-                } else {
-                    enemy.x += player.facing * 30; // Retroceso al recibir golpe
-                }
-            }
-
-            // Colisión con el jugador (Daño)
-            if (Math.abs(player.x - enemy.x) < 32 && enemy.active) {
-                lives--;
-                screenShakeTimer = 12;
-                document.getElementById("lives").innerText = `HOMER x${lives}`;
-                enemy.x += 80;
-                spawnParticles(player.x + 20, player.y + 30, "#ff3333");
-
-                if (lives <= 0) {
-                    gameState = "GAMEOVER";
-                }
-            }
-        });
-
-        // Actualizar Partículas
-        particles.forEach(p => {
-            p.x += p.dx;
-            p.y += p.dy;
-            p.life--;
-        });
-        particles = particles.filter(p => p.life > 0);
-    }
-}
-
-function draw() {
-    ctx.save();
-    // Efecto Screen Shake en impactos fuertes
-    if (screenShakeTimer > 0) {
-        let shakeX = (Math.random() - 0.5) * 8;
-        let shakeY = (Math.random() - 0.5) * 8;
-        ctx.translate(shakeX, shakeY);
-    }
-
-    // --- FONDO ARCADE DETALLADO ---
-    ctx.fillStyle = "#141226";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // Siluetas de edificios de Springfield
-    ctx.fillStyle = "#1e1b3c";
-    ctx.fillRect(40, 90, 130, 260);
-    ctx.fillRect(210, 60, 160, 290);
-    ctx.fillRect(430, 110, 190, 240);
-    ctx.fillRect(660, 70, 130, 280);
-
-    // Suelo clásico de calle con bordes de neón
-    ctx.fillStyle = "#222034";
-    ctx.fillRect(0, 350, canvas.width, 100);
-    ctx.fillStyle = "#f1c40f";
-    ctx.fillRect(0, 350, canvas.width, 4);
-
-    if (gameState === "PLAYING") {
-        // --- RENDERIZAR JUGADOR (HOMER) ---
-        // Cuerpo / Camisa
-        ctx.fillStyle = "#ffffff";
-        ctx.fillRect(player.x + 8, player.y + 30, 28, 32);
-        // Pantalones
-        ctx.fillStyle = "#2980b9";
-        ctx.fillRect(player.x + 8, player.y + 62, 28, 14);
-        // Cabeza
-        ctx.fillStyle = "#ffcc00";
-        ctx.fillRect(player.x + 6, player.y + 6, 34, 30);
-        // Ojos
-        ctx.fillStyle = "#000";
-        ctx.fillRect(player.x + (player.facing > 0 ? 24 : 14), player.y + 15, 5, 5);
-
-        // Animación de Golpe de Puño
-        if (player.isAttacking) {
-            ctx.fillStyle = "#e67e22";
-            ctx.fillRect(player.x + (player.facing > 0 ? 35 : -20), player.y + 35, 25, 12);
+    if (isMoving && !player.isJumping && !player.isPunching) {
+        player.state = "WALK";
+        player.animTimer++;
+        if (player.animTimer > 8) {
+            player.animFrame = (player.animFrame + 1) % 4;
+            player.animTimer = 0;
         }
+    } else if (!player.isJumping && !player.isPunching && player.state !== "IDLE") {
+        player.state = "IDLE";
+    }
 
-        // --- RENDERIZAR ENEMIGOS ---
-        enemies.forEach(enemy => {
-            if (!enemy.active) return;
-            ctx.fillStyle = enemy.color;
-            ctx.fillRect(enemy.x, enemy.y, enemy.width, enemy.height);
-            // Detalles enemigos
-            ctx.fillStyle = "#000";
-            ctx.fillRect(enemy.x + 12, enemy.y + 14, 6, 6);
-        });
+    // Límites de suelo
+    if (player.y < GROUND_MIN) player.y = GROUND_MIN;
+    if (player.y > GROUND_MAX) player.y = GROUND_MAX;
+    if (player.x < cameraX + 20) player.x = cameraX + 20;
 
-        // --- RENDERIZAR PARTÍCULAS ---
-        particles.forEach(p => {
-            ctx.fillStyle = p.color;
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
-            ctx.fill();
-        });
+    // Desplazamiento de Cámara (Parallax dinámico)
+    if (player.x > cameraX + canvas.width * 0.5) {
+        cameraX = player.x - canvas.width * 0.5;
+    }
 
-        // Indicador de Oleada en pantalla
-        ctx.fillStyle = "#00ff66";
-        ctx.font = "bold 14px 'Courier New'";
-        ctx.fillText(`WAVE ${wave}`, canvas.width / 2 - 30, 35);
+    // Gravedad de Salto
+    if (player.isJumping) {
+        player.z += player.vz;
+        player.vz += 0.65;
+        if (player.z >= 0) {
+            player.z = 0;
+            player.isJumping = false;
+            player.state = "IDLE";
+        }
+    }
 
-    } else {
-        // --- PANTALLA DE GAME OVER PROFESIONAL ---
-        ctx.fillStyle = "rgba(0, 0, 0, 0.9)";
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+    // Actualización de Enemigos (Persecución Inteligente)
+    enemies.forEach(enemy => {
+        if (enemy.hitTimer > 0) enemy.hitTimer--;
+        else enemy.isHit = false;
 
-        ctx.fillStyle = "#ff3333";
-        ctx.font = "bold 36px 'Courier New'";
-        ctx.textAlign = "center";
-        ctx.fillText("MISSION FAILED", canvas.width / 2, 130);
+        if (enemy.x > player.x + 20) enemy.x -= enemy.speed;
+        if (enemy.x < player.x - 20) enemy.x += enemy.speed;
+        if (enemy.y < player.y - 2) enemy.y += enemy.speed * 0.4;
+        if (enemy.y > player.y + 2) enemy.y -= enemy.speed * 0.4;
 
-        ctx.fillStyle = "#ffd700";
-        ctx.font = "22px 'Courier New'";
-        ctx.fillText(`FINAL SCORE: ${score} | WAVES CLEARED: ${wave}`, canvas.width / 2, 190);
+        // Daño al jugador por colisión directa
+        const dist = Math.hypot((player.x - enemy.x), (player.y - enemy.y));
+        if (dist < 40 && player.z === 0) {
+            lives--;
+            player.x -= player.facing * 40; // Empuje de retroceso
+            effects.push({ text: "-1 ❤️", x: player.x, y: player.y - 40, life: 30, color: "#ff3333" });
+            if (lives <= 0) {
+                triggerGameOver();
+            }
+        }
+    });
 
+    // Actualizar Efectos Flotantes
+    effects.forEach((eff, idx) => {
+        eff.y -= 1;
+        eff.life--;
+        if (eff.life <= 0) effects.splice(idx, 1);
+    });
+
+    // Actualizar HUD superior
+    document.getElementById("hudScore").innerText = `1UP: ${String(score).padStart(6, '0')}`;
+    document.getElementById("hudLives").innerText = `HOMER: ${'❤️'.repeat(Math.max(0, lives))}`;
+}
+
+function triggerGameOver() {
+    gameState = "GAMEOVER";
+    document.getElementById("finalStats").innerText = `FINAL SCORE: ${score} | STAGE CLEARED: ${stageWaves}`;
+    const tweetText = encodeURIComponent(`¡Conseguí ${score} puntos en Springfield Arcade! 🍩🎮 Reviví la experiencia Konami acá: https://loscaco.github.io/TheSimpsonsArcade/`);
+    document.getElementById("shareBtn").href = `https://twitter.com/intent/tweet?text=${tweetText}`;
+    document.getElementById("gameOverScreen").classList.remove("hidden");
+}
+
+function render() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // --- CAPA 1: FONDO URBANO CON EFECTO PARALLAX ---
+    ctx.fillStyle = "#120d26"; // Cielo nocturno Springfield
+    ctx.fillRect(0, 0, canvas.width, GROUND_MIN);
+
+    // Edificios lejanos desplazados a menor velocidad (Parallax)
+    ctx.fillStyle = "#1d1538";
+    let bgScroll = cameraX * 0.3;
+    for (let i = -1; i < 5; i++) {
+        ctx.fillRect(i * 200 - (bgScroll % 200), GROUND_MIN - 140, 140, 140);
+        // Ventanas iluminadas típicas de la planta nuclear
+        ctx.fillStyle = "#ffe600";
+        ctx.fillRect(i * 200 - (bgScroll % 200) + 20, GROUND_MIN - 110, 20, 25);
+        ctx.fillRect(i * 200 - (bgScroll % 200) + 70, GROUND_MIN - 110, 20, 25);
+        ctx.fillStyle = "#1d1538";
+    }
+
+    // --- CAPA 2: PAVIMENTO Y CALLE ARCADE ---
+    ctx.fillStyle = "#2c2830";
+    ctx.fillRect(0, GROUND_MIN, canvas.width, canvas.height - GROUND_MIN);
+
+    // Líneas de acera con perspectiva móvil
+    ctx.strokeStyle = "#403945";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(0, GROUND_MIN);
+    ctx.lineTo(canvas.width, GROUND_MIN);
+    ctx.stroke();
+
+    // --- CAPA 3: Y-SORTING ENTITIES (ORDENAMIENTO DE PROFUNDIDAD) ---
+    let renderList = [
+        { y: player.y, draw: drawHomer },
+        ...enemies.map(en => ({ y: en.y, draw: () => drawAdvancedEnemy(en) }))
+    ];
+
+    renderList.sort((a, b) => a.y - b.y);
+    renderList.forEach(item => item.draw());
+
+    // --- CAPA 4: EFECTOS VISUALES Y TEXTOS DE COMBATE ---
+    effects.forEach(eff => {
+        ctx.fillStyle = eff.color;
+        ctx.font = "bold 20px 'Courier New'";
+        ctx.fillText(eff.text, eff.x - cameraX, eff.y);
+    });
+}
+
+// Renderizador Avanzado de Homer Simpson (Proporciones y Estética Arcade Fieles)
+function drawHomer() {
+    const rx = player.x - cameraX;
+    const ry = player.y - player.z;
+
+    // Sombra en el suelo
+    ctx.fillStyle = "rgba(0,0,0,0.5)";
+    ctx.beginPath();
+    ctx.ellipse(rx + player.width/2, player.y + 12, 22, 8, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Pantalones azules clásicos
+    ctx.fillStyle = "#0055cc";
+    ctx.fillRect(rx + 16, ry + 52, 32, 35);
+
+    // Camisa blanca
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(rx + 12, ry + 28, 40, 26);
+
+    // Cabeza y Papada Amarilla
+    ctx.fillStyle = "#ffcc00";
+    ctx.fillRect(rx + 14, ry - 6, 38, 38);
+
+    // Ojos y Pelo icónico lateral
+    ctx.fillStyle = "#000";
+    ctx.fillRect(rx + (player.facing === 1 ? 38 : 16), ry + 4, 6, 8); // Ojo
+    ctx.fillRect(rx + (player.facing === 1 ? 8 : 46), ry + 10, 6, 3); // Pelo oreja
+
+    // Animación de Ataque (Puñetazo con guante blanco)
+    if (player.isPunching) {
         ctx.fillStyle = "#ffffff";
-        ctx.font = "15px 'Courier New'";
-        ctx.fillText("Challenge your developer friends on X!", canvas.width / 2, 240);
-
-        // Botón de acción interactivo
-        ctx.fillStyle = "#00ff66";
-        ctx.fillRect(canvas.width / 2 - 150, 290, 300, 52);
-        ctx.fillStyle = "#000000";
-        ctx.font = "bold 16px 'Courier New'";
-        ctx.fillText("SHARE SCORE ON X 🚀", canvas.width / 2, 323);
-        ctx.textAlign = "left";
+        const fistX = player.facing === 1 ? rx + player.width : rx - 28;
+        ctx.fillRect(fistX, ry + 26, 32, 20);
     }
-
-    ctx.restore();
 }
 
-// Disparar Web Intent directo a X al terminar la partida
-canvas.addEventListener("click", () => {
-    if (gameState === "GAMEOVER") {
-        const text = encodeURIComponent(`I survived ${wave} waves and scored ${score} points in Springfield Arcade natively inside X! Can you beat my dev skills? 🕹️🔥 #BuildInPublic #IndieDev`);
-        window.open(`https://twitter.com/intent/tweet?text=${text}`, '_blank');
-    }
-});
+// Renderizador Avanzado de Enemigos
+function drawAdvancedEnemy(enemy) {
+    const rx = enemy.x - cameraX;
+    const ry = enemy.y;
 
-function loop() {
-    update();
-    draw();
-    requestAnimationFrame(loop);
+    // Sombra
+    ctx.fillStyle = "rgba(0,0,0,0.5)";
+    ctx.beginPath();
+    ctx.ellipse(rx + enemy.width/2, enemy.y + 12, 20, 7, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Cuerpo (Parpadea en blanco si recibe daño)
+    ctx.fillStyle = enemy.isHit ? "#ffffff" : (enemy.type === "SMITHERS" ? "#3366cc" : "#cc3333");
+    ctx.fillRect(rx + 10, ry + 24, 36, 55);
+
+    // Cabeza
+    ctx.fillStyle = "#ffcc99";
+    ctx.fillRect(rx + 14, ry - 2, 28, 28);
 }
 
-loop();
+// Lanzar motor gráfico
+requestAnimationFrame(gameLoop);
