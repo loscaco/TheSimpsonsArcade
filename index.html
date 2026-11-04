@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Springfield Arcade - Native X App</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="gameCanvas" width="800" height="450"></canvas>
+        <div id="ui-layer">
+            <span id="score">SCORE: 000000</span>
+            <span id="lives">HOMER x3</span>
+        </div>
+        <!-- Controles táctiles optimizados para móviles y el feed de X -->
+        <div id="touch-controls">
+            <div id="d-pad">
+                <button id="btn-left">◀</button>
+                <button id="btn-right">▶</button>
+                <button id="btn-up">▲</button>
+                <button id="btn-down">▼</button>
+            </div>
+            <div id="actions">
+                <button id="btn-jump">JUMP</button>
+                <button id="btn-attack">PUNCH</button>
+            </div>
+        </div>
+    </div>
+    <script src="game.js"></script>
+</body>
+</html>
